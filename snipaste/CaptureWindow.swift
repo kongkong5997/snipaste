@@ -94,4 +94,14 @@ class CaptureWindow: NSWindow {
     override var acceptsFirstResponder: Bool {
         return true
     }
+
+    override func becomeKey() {
+        super.becomeKey()
+        print("🪟 窗口成为 key")
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        print("🪟⚠️ 窗口失去 key（此后的第一次点击可能被系统吞掉用于激活）")
+    }
 }

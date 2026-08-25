@@ -2,93 +2,132 @@
 //  SelectionToolbar.swift
 //  snipaste
 //
-//  Created by Claude
 //
 
-import SwiftUI
+import AppKit
 
-// MARK: - 工具栏按钮样式
-struct ToolbarButton: View {
-    let icon: String
-    let action: () -> Void
+// MARK: - 工具栏图标按钮（纯 AppKit：命中区域即按钮帧，行为完全确定）
 
-    @State private var isHovering = false
+final class ToolbarIconButton: NSButton {
 
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white)
-                .frame(width: 32, height: 32)
+    private let actionClosure: () -> Void
+    private var trackingArea: NSTrackingArea?
+
+    private let idleBackground = NSColor.white.withAlphaComponent(0.10)
+    private let hoverBackground = NSColor.white.withAlphaComponent(0.28)
+
+    init(icon: String, label: String, action: @escaping () -> Void) {
+        actionClosure = action
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.sideLength, height: Self.sideLength))
+
+        let configuration = NSImage.SymbolConfiguration(pointSize: 19, weight: .medium)
+        image = NSImage(systemSymbolName: icon, accessibilityDescription: label)?
+            .withSymbolConfiguration(configuration)
+        imagePosition = .imageOnly
+        isBordered = false
+        contentTintColor = .white
+        setAccessibilityLabel(label)
+
+        // 自定义悬浮高亮背景
+        wantsLayer = true
+        layer?.backgroundColor = idleBackground.cgColor
+        layer?.cornerRadius = 8
+
+        target = self
+        self.action = #selector(clicked)  // 显式 self：避免与同名 init 参数遮蔽
+    }
+
+    /// 按钮边长（同时决定命中区域大小）
+    static let sideLength: CGFloat = 32
+
+    @objc private func clicked() {
+        actionClosure()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("不支持从 XIB 初始化")
+    }
+
+    override func layout() {
+        super.layout()
+        updateTrackingAreas()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
         }
-        .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(isHovering ? 0.25 : 0.1))
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self
         )
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            // 悬浮切换手型光标，并给出轻微高亮反馈
-            isHovering = hovering
-            if hovering {
-                NSCursor.pointingHand.set()
-            } else {
-                NSCursor.arrow.set()
-            }
-        }
+        addTrackingArea(area)
+        self.trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = hoverBackground.cgColor
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = idleBackground.cgColor
+        NSCursor.arrow.set()
     }
 }
 
-// MARK: - 工具栏主视图
-struct SelectionToolbar: View {
-    let onClose: () -> Void
-    let onPin: () -> Void
-    let onCopy: () -> Void
+// MARK: - 工具栏主体
 
-    var body: some View {
-        HStack(spacing: 4) {
-            ToolbarButton(icon: "pencil") {
-                print("✏️ 画笔工具")
-            }
+final class SelectionToolbarView: NSStackView {
 
-            ToolbarButton(icon: "square") {
-                print("⬜ 方框工具")
-            }
+    /// fittingSize 异常时的兜底尺寸（7 按钮 + 分隔线 + 间距 + 内边距的估算值）
+    static let estimatedSize = NSSize(width: 386, height: 100)
 
-            ToolbarButton(icon: "arrow.up.right") {
-                print("↗️ 箭头工具")
-            }
+    init(onClose: @escaping () -> Void,
+         onPin: @escaping () -> Void,
+         onCopy: @escaping () -> Void) {
+        super.init(frame: .zero)
 
-            ToolbarButton(icon: "checkerboard.rectangle") {
-                print("🔲 马赛克工具")
-            }
+        orientation = .horizontal
+        alignment = .centerY
+        spacing = 6
+        edgeInsets = NSEdgeInsets(top: 15, left: 15, bottom: 15, right: 15)
 
-            Divider()
-                .frame(height: 20)
-                .background(Color.white.opacity(0.3))
+        // 深色半透明圆角底板
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        layer?.cornerRadius = 6
 
-            ToolbarButton(icon: "pin") {
-                onPin()
-            }
-
-            ToolbarButton(icon: "doc.on.doc") {
-                onCopy()
-            }
-
-            ToolbarButton(icon: "xmark") {
-                onClose()
-            }
+        let buttons: [NSView] = [
+            ToolbarIconButton(icon: "pencil", label: "画笔") { print("✏️ 画笔工具") },
+            ToolbarIconButton(icon: "square", label: "方框") { print("⬜ 方框工具") },
+            ToolbarIconButton(icon: "arrow.up.right", label: "箭头") { print("↗️ 箭头工具") },
+            ToolbarIconButton(icon: "checkerboard.rectangle", label: "马赛克") { print("🔲 马赛克工具") },
+            Self.separator(),
+            ToolbarIconButton(icon: "pin", label: "置顶", action: onPin),
+            ToolbarIconButton(icon: "doc.on.doc", label: "复制", action: onCopy),
+            ToolbarIconButton(icon: "xmark", label: "关闭", action: onClose),
+        ]
+        for view in buttons {
+            addArrangedSubview(view)
         }
-        .padding(6)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.black.opacity(0.75))
-                .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
-        )
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("不支持从 XIB 初始化")
+    }
+
+    private static func separator() -> NSView {
+        let box = NSBox()
+        box.boxType = .separator
+        return box
     }
 }
 
 // MARK: - 工具栏定位计算器
+
 struct ToolbarPositionCalculator {
     /// 计算工具栏的最佳位置
     /// - Parameters:
@@ -105,8 +144,8 @@ struct ToolbarPositionCalculator {
         let toolbarHeight = toolbarSize.height
         let padding: CGFloat = 12  // 工具栏与选区的间距
 
-        // 默认位置：选区正下方，水平居中
-        var toolbarX = selectionRect.midX - toolbarWidth / 2
+        // 默认位置：选区正下方，工具栏右缘与选区右缘平齐
+        var toolbarX = selectionRect.maxX - toolbarWidth
         var toolbarY = selectionRect.minY - toolbarHeight - padding
 
         // 确保不超出屏幕左侧
@@ -143,74 +182,6 @@ struct ToolbarPositionCalculator {
         // 最后检查：确保不超出屏幕顶部
         if toolbarY + toolbarHeight > screenBounds.maxY {
             toolbarY = screenBounds.maxY - toolbarHeight - padding
-        }
-
-        return CGPoint(x: toolbarX, y: toolbarY)
-    }
-}
-
-// MARK: - 工具栏容器视图（处理定位）
-struct FloatingToolbar: View {
-    let selectionRect: CGRect
-    let screenBounds: CGRect
-    let onClose: () -> Void
-    let onPin: () -> Void
-    let onCopy: () -> Void
-
-    @State private var toolbarSize: CGSize = .zero
-
-    var body: some View {
-        ZStack {
-            Color.clear
-
-            SelectionToolbar(onClose: onClose, onPin: onPin, onCopy: onCopy)
-                .background(
-                    GeometryReader { toolbarGeometry in
-                        Color.clear
-                            .onAppear {
-                                toolbarSize = toolbarGeometry.size
-                            }
-                            .onChange(of: toolbarGeometry.size) { _, newSize in
-                                toolbarSize = newSize
-                            }
-                    }
-                )
-                .position(calculateSwiftUIPosition())
-        }
-        .frame(width: screenBounds.width, height: screenBounds.height)
-    }
-
-    /// 计算 SwiftUI 坐标系下的 position
-    /// SwiftUI 坐标系：原点在左上角，Y 轴向下
-    /// AppKit 坐标系：原点在左下角，Y 轴向上
-    private func calculateSwiftUIPosition() -> CGPoint {
-        guard toolbarSize.width > 0 && toolbarSize.height > 0 else {
-            // 工具栏尺寸还未确定，先放屏幕中心，等尺寸回调后再修正
-            return CGPoint(x: screenBounds.width / 2, y: screenBounds.height / 2)
-        }
-
-        let padding: CGFloat = 12  // 工具栏与选区的间距
-
-        // 靠选区右边对齐：工具栏右缘与选区右缘平齐，并确保不超出屏幕边界
-        var toolbarX = selectionRect.maxX - toolbarSize.width / 2
-        let minX = toolbarSize.width / 2 + padding
-        let maxX = screenBounds.width - toolbarSize.width / 2 - padding
-        toolbarX = max(minX, min(maxX, toolbarX))
-
-        // AppKit 的 minY 是选区底部（距屏幕底部的距离），转成距屏幕顶部的距离
-        let selectionBottomInSwiftUI = screenBounds.height - selectionRect.minY
-
-        // 默认放在选区下方
-        var toolbarY = selectionBottomInSwiftUI + padding + toolbarSize.height / 2
-
-        // 超出屏幕底部时放到选区上方；上方也放不下则放进选区内部顶部
-        if toolbarY + toolbarSize.height / 2 > screenBounds.height {
-            let selectionTopInSwiftUI = screenBounds.height - selectionRect.maxY
-            toolbarY = selectionTopInSwiftUI - padding - toolbarSize.height / 2
-
-            if toolbarY - toolbarSize.height / 2 < 0 {
-                toolbarY = selectionTopInSwiftUI + padding + toolbarSize.height / 2
-            }
         }
 
         return CGPoint(x: toolbarX, y: toolbarY)

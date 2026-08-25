@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import SwiftUI
 import ScreenCaptureKit
 
 class CaptureView: NSView {
@@ -51,7 +50,10 @@ class CaptureView: NSView {
     private var resizeOriginalRect: NSRect = .zero    // resizing：拖拽前的选区
     private var activeHandle: ResizeHandle?           // resizing：当前操作的控制柄
 
-    private var toolbarHostingView: NSHostingView<FloatingToolbar>?
+    // 工具栏使用独立 NSPanel 承载：
+    // 若作为子视图嵌入 CaptureView，SwiftUI 未接住的鼠标事件会沿响应者链
+    // 上抛给 CaptureView 被静默吞掉；独立面板彻底切断这条通路
+    private var toolbarPanel: NSPanel?
     private var isCapturing = false  // 防止重复截图
     private var isClosed = false  // 防止重复关闭
     private var currentCaptureTask: Task<Void, Never>?  // 当前截图任务
@@ -182,6 +184,7 @@ class CaptureView: NSView {
     // MARK: - 鼠标事件
 
     override func mouseDown(with event: NSEvent) {
+        print("🖱️ mouseDown: point=\(convert(event.locationInWindow, from: nil)), state=\(state), 有选区=\(selectionRect != nil), 窗口key=\(window?.isKeyWindow ?? false)")
         guard !isClosed, !isCapturing, state == .idle else { return }
         let point = convert(event.locationInWindow, from: nil)
 
@@ -296,6 +299,11 @@ class CaptureView: NSView {
         case .moving, .resizing:
             print("✅ 变换完成: \(selectionRect.map { "\($0.origin), \($0.size)" } ?? "nil")")
             state = .idle
+            // 拖拽结束后确保工具栏面板仍在最前、可正常接收点击
+            toolbarPanel?.orderFront(nil)
+            if let panel = toolbarPanel {
+                print("🪟 工具栏面板: frame=\(panel.frame)")
+            }
             updateCursor(at: point)
 
         default:
@@ -581,18 +589,19 @@ class CaptureView: NSView {
 
     // MARK: - 工具栏管理
 
-    /// 构造绑定当前选区的工具栏
-    private func makeToolbar(for rect: NSRect) -> FloatingToolbar {
-        FloatingToolbar(
-            selectionRect: rect,
-            screenBounds: bounds,
+    /// 构造工具栏（闭包里打印触发日志，便于诊断点击链路）
+    private func makeToolbar() -> SelectionToolbarView {
+        SelectionToolbarView(
             onClose: { [weak self] in
+                print("🔘 工具栏：关闭按钮被点击")
                 self?.safeCancelAndClose()
             },
             onPin: { [weak self] in
+                print("🔘 工具栏：置顶按钮被点击")
                 self?.handlePinAction()
             },
             onCopy: { [weak self] in
+                print("🔘 工具栏：复制按钮被点击")
                 self?.handleCopyAction()
             }
         )
@@ -601,40 +610,58 @@ class CaptureView: NSView {
     private func showToolbar(for rect: NSRect) {
         // 移除旧的工具栏
         hideToolbar()
+        NSApp.activate(ignoringOtherApps: true)
 
-        // 使用 NSHostingView 托管 SwiftUI 视图
-        let hostingView = NSHostingView(rootView: makeToolbar(for: rect))
-        hostingView.frame = bounds
-        hostingView.wantsLayer = true
-        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        let toolbarView = makeToolbar()
+        var size = toolbarView.fittingSize
+        if size.width <= 0 || size.height <= 0 {
+            size = SelectionToolbarView.estimatedSize
+        }
 
-        // 确保视图可见
-        hostingView.alphaValue = 1.0
-        hostingView.isHidden = false
+        // 非激活面板：点击工具栏不会抢走截图窗口的焦点
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .screenSaver   // 与截图遮罩同级、后创建者在上
+        panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
+        panel.contentView = toolbarView
+        panel.setFrameOrigin(ToolbarPositionCalculator.calculatePosition(
+            selectionRect: rect, toolbarSize: size, screenBounds: bounds))
+        panel.orderFront(nil)
 
-        addSubview(hostingView)
-        toolbarHostingView = hostingView
+        toolbarPanel = panel
     }
 
-    /// 选区平移/拉伸时更新工具栏位置（替换 rootView 触发 SwiftUI 重新布局）
+    /// 选区平移/拉伸时更新工具栏位置
+    /// 注意：只在原点真正变化时才移动窗口——拖拽期间每个鼠标事件都触发本方法，
+    /// 高频的空窗口事务会让面板进入无法接收点击的异常状态
     private func refreshToolbarPosition() {
-        guard let hostingView = toolbarHostingView, let rect = selectionRect else { return }
-        hostingView.rootView = makeToolbar(for: rect)
+        guard let panel = toolbarPanel, let rect = selectionRect else { return }
+        let newOrigin = ToolbarPositionCalculator.calculatePosition(
+            selectionRect: rect, toolbarSize: panel.frame.size, screenBounds: bounds)
+        if panel.frame.origin != newOrigin {
+            panel.setFrameOrigin(newOrigin)
+        }
     }
 
     private func hideToolbar() {
-        guard let hostingView = toolbarHostingView else { return }
+        guard let panel = toolbarPanel else { return }
 
         // 立即清空引用，防止重复调用
-        toolbarHostingView = nil
+        toolbarPanel = nil
 
-        // 确保在主线程执行
         if Thread.isMainThread {
-            hostingView.removeFromSuperview()
+            panel.orderOut(nil)
             print("🗑️ 工具栏已移除")
         } else {
             DispatchQueue.main.async {
-                hostingView.removeFromSuperview()
+                panel.orderOut(nil)
                 print("🗑️ 工具栏已移除（异步）")
             }
         }
