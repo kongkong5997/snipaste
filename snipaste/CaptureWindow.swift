@@ -30,6 +30,9 @@ class CaptureWindow: NSWindow {
         // 窗口配置
         setupWindow()
         setupCallbacks()
+
+        // 确保窗口立即成为焦点
+        makeFirstResponder(captureView)
     }
 
     private func setupWindow() {

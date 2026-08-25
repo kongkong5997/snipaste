@@ -11,21 +11,13 @@ import ScreenCaptureKit
 class ScreenshotManager {
     static let shared = ScreenshotManager()
     private var captureWindow: CaptureWindow?
-    private var isCapturing = false  // 防止重复调用
-    private var currentCaptureTask: Task<Void, Never>?  // 当前截图任务
 
     private init() {}
 
     /// 开始截图 - 显示全屏截图窗口
     func startCapture() {
         print("🎬 startCapture 被调用")
-        print("   - 当前 isCapturing: \(isCapturing)")
         print("   - 当前 captureWindow: \(captureWindow != nil ? "存在" : "nil")")
-
-        // 取消之前的截图任务
-        currentCaptureTask?.cancel()
-        currentCaptureTask = nil
-        isCapturing = false
 
         // 检查权限
         guard ScreenCapturePermission.hasPermission() else {
@@ -39,113 +31,32 @@ class ScreenshotManager {
         captureWindow = nil
         print("   - 已清理旧窗口")
 
-        // 获取主屏幕
-        guard let screen = NSScreen.main else {
-            print("❌ 无法获取主屏幕")
+        // 选择鼠标所在的屏幕：多显示器时在哪个屏触发就截哪个屏，
+        // 后续 CaptureView 的坐标转换和捕获都以这块屏为准
+        let mouseLocation = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main else {
+            print("❌ 无法获取屏幕")
             return
         }
 
         print("   - 创建新窗口...")
+
+        // 先激活应用
+        NSApp.activate(ignoringOtherApps: true)
+
         // 创建全屏透明窗口
         captureWindow = CaptureWindow(screen: screen)
+
+        // 确保窗口获得焦点
         captureWindow?.makeKeyAndOrderFront(nil)
 
-        // 进入截图模式
-        NSApp.activate(ignoringOtherApps: true)
+        // 再次确保窗口是 key window
+        captureWindow?.makeKey()
 
         print("🎯 进入截图模式")
         print("   - 窗口创建完成: \(captureWindow != nil ? "✅" : "❌")")
         print("   - 窗口可见: \(captureWindow?.isVisible ?? false)")
-    }
-
-    /// 截取指定区域
-    func captureRegion(_ rect: CGRect) {
-        // 防止重复调用
-        guard !isCapturing else {
-            print("⚠️ 正在截图中，请勿重复调用")
-            return
-        }
-        isCapturing = true
-
-        // 创建并保存任务引用
-        currentCaptureTask = Task {
-            do {
-                // 检查任务是否已被取消
-                guard !Task.isCancelled else {
-                    await MainActor.run {
-                        isCapturing = false
-                        currentCaptureTask = nil
-                    }
-                    return
-                }
-
-                // 获取可捕获的内容
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-
-                // 再次检查取消状态
-                guard !Task.isCancelled else {
-                    await MainActor.run {
-                        isCapturing = false
-                        currentCaptureTask = nil
-                    }
-                    return
-                }
-
-                // 获取主显示器
-                guard let mainDisplay = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
-                    print("❌ 无法获取主显示器")
-                    await MainActor.run {
-                        isCapturing = false
-                        currentCaptureTask = nil
-                        hideCaptureWindow()
-                    }
-                    return
-                }
-
-                // 创建截图配置
-                let configuration = SCStreamConfiguration()
-                configuration.sourceRect = rect
-                configuration.width = Int(rect.width)
-                configuration.height = Int(rect.height)
-                configuration.scalesToFit = false
-
-                // 获取所有窗口的过滤器
-                let filter = SCContentFilter(display: mainDisplay, excludingWindows: [])
-
-                // 创建截图
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-
-                // 最后检查取消状态
-                guard !Task.isCancelled else {
-                    await MainActor.run {
-                        isCapturing = false
-                        currentCaptureTask = nil
-                    }
-                    return
-                }
-
-                await MainActor.run {
-                    let nsImage = NSImage(cgImage: image, size: rect.size)
-                    print("✅ 截图成功！选区: \(rect), 图像尺寸: \(nsImage.size)")
-
-                    // TODO: 保存或处理图像
-
-                    isCapturing = false
-                    currentCaptureTask = nil
-                    hideCaptureWindow()
-                }
-            } catch {
-                // 如果是任务取消错误，不打印
-                if !Task.isCancelled {
-                    print("❌ 截图失败: \(error)")
-                }
-                await MainActor.run {
-                    isCapturing = false
-                    currentCaptureTask = nil
-                    hideCaptureWindow()
-                }
-            }
-        }
+        print("   - 窗口是否为 key: \(captureWindow?.isKeyWindow ?? false)")
     }
 
     /// 隐藏截图窗口
@@ -157,11 +68,6 @@ class ScreenshotManager {
         }
 
         print("🚪 开始关闭截图窗口")
-
-        // 重置状态
-        currentCaptureTask?.cancel()
-        currentCaptureTask = nil
-        isCapturing = false
 
         // 保存窗口引用
         guard let window = captureWindow else { return }

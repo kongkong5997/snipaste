@@ -6,9 +6,10 @@
 //
 
 import AppKit
+import Carbon.HIToolbox
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    var hotKeyMonitor: Any?
+    private var hotKeyRef: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 设置应用不显示在 Dock
@@ -22,19 +23,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupHotKeys() {
-        // 使用 NSEvent 监听 Cmd+Shift+X
-        hotKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // X key 的 keyCode 是 7
-            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 7 {
-                self?.handleHotKeyPressed()
-            }
-        }
-    }
+        // 使用 RegisterEventHotKey 注册全局快捷键：
+        // 不需要"输入监听"权限，且本应用处于前台时同样生效（NSEvent 全局监听两者都做不到）
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+            print("⌨️ 快捷键 Cmd+Shift+X 被按下")
+            ScreenshotManager.shared.startCapture()
+            return noErr
+        }, 1, &eventType, nil, nil)
 
-    @objc private func handleHotKeyPressed() {
-        print("⌨️ 快捷键 Cmd+Shift+X 被按下")
-        // 触发截图
-        ScreenshotManager.shared.startCapture()
+        // X 的 keyCode 是 7（kVK_ANSI_X）
+        var hotKeyID = EventHotKeyID(signature: OSType(0x534E4950) /* 'SNIP' */, id: 1)
+        let status = RegisterEventHotKey(
+            UInt32(kVK_ANSI_X),
+            UInt32(cmdKey | shiftKey),
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+        if status != noErr {
+            print("❌ 全局快捷键注册失败: \(status)")
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

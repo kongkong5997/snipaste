@@ -318,6 +318,12 @@ class CaptureView: NSView {
             return
         }
 
+        print("📍 选区坐标（AppKit坐标系，原点在左下角）:")
+        print("   - rect.origin: (\(rect.origin.x), \(rect.origin.y))")
+        print("   - rect.size: (\(rect.width), \(rect.height))")
+        print("   - 窗口bounds: \(window?.frame ?? .zero)")
+        print("   - 屏幕frame: \(window?.screen?.frame ?? .zero)")
+
         // 先隐藏工具栏，避免截图包含工具栏
         hideToolbar()
 
@@ -397,23 +403,66 @@ class CaptureView: NSView {
                 return false
             }
 
-            // 获取主显示器
-            guard let mainDisplay = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
-                print("❌ 无法获取主显示器")
+            // 使用截图窗口所在的屏幕，保证显示器、坐标系、缩放因子三者一致
+            guard let screen = window?.screen ?? NSScreen.main,
+                  let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+                print("❌ 无法获取目标屏幕")
+                return false
+            }
+
+            guard let mainDisplay = content.displays.first(where: { $0.displayID == displayID }) else {
+                print("❌ 无法获取显示器 (displayID=\(displayID))")
                 return false
             }
 
             print("⏱️ [Step 2] 配置截图参数...")
 
+            // 获取屏幕缩放因子（Retina 屏幕为 2.0）
+            let scaleFactor = screen.backingScaleFactor
+            print("📱 屏幕缩放因子: \(scaleFactor)")
+
+            // 获取屏幕高度用于坐标转换
+            let screenHeight = screen.frame.height
+
+            // 转换坐标系：AppKit（原点左下角）-> ScreenCaptureKit（原点左上角）
+            // SCK的Y = 屏幕高度 - AppKit的Y - 选区高度
+            let sckRect = CGRect(
+                x: rect.origin.x,
+                y: screenHeight - rect.origin.y - rect.height,
+                width: rect.width,
+                height: rect.height
+            )
+
+            print("📍 坐标转换:")
+            print("   - AppKit rect (原点左下角): origin=(\(rect.origin.x), \(rect.origin.y)), size=(\(rect.width)x\(rect.height))")
+            print("   - SCK rect (原点左上角): origin=(\(sckRect.origin.x), \(sckRect.origin.y)), size=(\(sckRect.width)x\(sckRect.height))")
+            print("   - 屏幕高度: \(screenHeight)")
+
             // 创建截图配置
             let configuration = SCStreamConfiguration()
-            configuration.sourceRect = rect
-            configuration.width = Int(rect.width)
-            configuration.height = Int(rect.height)
+            configuration.sourceRect = sckRect  // 使用转换后的坐标
+            // 物理像素尺寸四舍五入，与源区域保持 1:1，不引入重采样缩放
+            configuration.width = Int((rect.width * scaleFactor).rounded())
+            configuration.height = Int((rect.height * scaleFactor).rounded())
             configuration.scalesToFit = false
 
-            // 获取所有窗口的过滤器
-            let filter = SCContentFilter(display: mainDisplay, excludingWindows: [])
+            // 设置高质量参数
+            configuration.showsCursor = false  // 不显示光标
+            configuration.backgroundColor = .clear  // 透明背景
+            configuration.pixelFormat = kCVPixelFormatType_32BGRA  // 高质量像素格式
+            // 注意：不设置 colorSpaceName，保留显示器原生色彩空间，
+            // 避免 P3 -> sRGB 转换造成色偏，保证截到的是"原图"
+
+            print("📐 逻辑尺寸: \(Int(rect.width))x\(Int(rect.height))")
+            print("📐 物理像素: \(configuration.width)x\(configuration.height)")
+
+            // 获取所有窗口的过滤器，排除本应用的窗口，
+            // 避免遮罩/选区边框被截进图像（否则边缘会带约 1px 白线）
+            let bundleID = Bundle.main.bundleIdentifier
+            let selfWindows = content.windows.filter { window in
+                window.owningApplication?.bundleIdentifier == bundleID
+            }
+            let filter = SCContentFilter(display: mainDisplay, excludingWindows: selfWindows)
 
             let step2Start = Date()
             print("⏱️ [Step 3] 开始捕获图像...")
@@ -423,6 +472,7 @@ class CaptureView: NSView {
 
             let step2Duration = Date().timeIntervalSince(step2Start) * 1000
             print("⏱️ [Step 3] 图像捕获完成，耗时: \(Int(step2Duration))ms")
+            print("📊 捕获的图像尺寸: \(image.width)x\(image.height)")
 
             // 再次检查取消
             guard !Task.isCancelled else {
@@ -437,16 +487,24 @@ class CaptureView: NSView {
             print("⏱️ [后台] 开始生成 PNG 数据...")
             let dataStart = Date()
 
-            // 创建 NSBitmapImageRep 来生成 PNG
+            // 创建 NSBitmapImageRep 来生成高质量图像数据
             let bitmapRep = NSBitmapImageRep(cgImage: image)
 
-            guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
-                print("❌ [后台] 无法生成 PNG 数据")
+            // 正确设置逻辑尺寸（单位：points）
+            bitmapRep.size = NSSize(width: CGFloat(image.width) / scaleFactor, height: CGFloat(image.height) / scaleFactor)
+
+            print("📊 BitmapRep 像素尺寸: \(bitmapRep.pixelsWide)x\(bitmapRep.pixelsHigh)")
+            print("📊 BitmapRep 逻辑尺寸: \(bitmapRep.size)")
+            print("📊 计算的 DPI: \(72.0 * scaleFactor)") // 标准 72 DPI * 缩放因子
+
+            // 使用 TIFF 格式（无损且保留所有元数据）
+            guard let tiffData = bitmapRep.tiffRepresentation else {
+                print("❌ [后台] 无法生成 TIFF 数据")
                 return false
             }
 
             let dataDuration = Date().timeIntervalSince(dataStart) * 1000
-            print("⏱️ [后台] PNG 数据生成完成，耗时: \(Int(dataDuration))ms, 大小: \(pngData.count) bytes")
+            print("⏱️ [后台] TIFF 数据生成完成，耗时: \(Int(dataDuration))ms, 大小: \(tiffData.count) bytes")
 
             let step3Duration = Date().timeIntervalSince(step3Start) * 1000
             print("⏱️ [Step 4] 图像数据准备完成，总耗时: \(Int(step3Duration))ms")
@@ -465,13 +523,22 @@ class CaptureView: NSView {
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
 
-                // 写入 PNG 数据
-                let result = pasteboard.setData(pngData, forType: .png)
+                // 方法1：TIFF，默认无压缩，逐字节保留原始像素；
+                // 先写入的类型成为首选类型，粘贴方优先取用
+                let tiffResult = pasteboard.setData(tiffData, forType: .tiff)
+                print("   - TIFF 写入: \(tiffResult ? "✅" : "❌")")
+
+                // 方法2：PNG，无损压缩——解码后像素与原图完全一致，
+                // 兼容只认 PNG 的应用；两者都不会有画质损失
+                if let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+                    let pngResult = pasteboard.setData(pngData, forType: .png)
+                    print("   - PNG 写入: \(pngResult ? "✅" : "❌")")
+                }
 
                 let duration = Date().timeIntervalSince(pasteboardStart) * 1000
-                print("⏱️ [主线程] 剪贴板写入完成，耗时: \(Int(duration))ms, 成功: \(result)")
+                print("⏱️ [主线程] 剪贴板写入完成，耗时: \(Int(duration))ms")
 
-                return result
+                return tiffResult
             }
 
             if success {
@@ -485,13 +552,6 @@ class CaptureView: NSView {
             print("❌ 错误详情: \(error.localizedDescription)")
             return false
         }
-    }
-
-    private func copyToClipboard(image: NSImage) {
-        // 这个方法已经被内联到 captureAndCopyToClipboard 中，保留以防其他地方使用
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.writeObjects([image])
     }
 
     // MARK: - 键盘事件
