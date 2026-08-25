@@ -46,6 +46,9 @@ class CaptureWindow: NSWindow {
         // 确保窗口可以接收鼠标事件
         ignoresMouseEvents = false
 
+        // 接收 mouseMoved 事件，用于悬浮时切换光标
+        acceptsMouseMovedEvents = true
+
         // 窗口行为
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 

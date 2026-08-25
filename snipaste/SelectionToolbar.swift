@@ -12,6 +12,8 @@ struct ToolbarButton: View {
     let icon: String
     let action: () -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
@@ -22,9 +24,18 @@ struct ToolbarButton: View {
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(0.1))
+                .fill(Color.white.opacity(isHovering ? 0.25 : 0.1))
         )
         .contentShape(Rectangle())
+        .onHover { hovering in
+            // 悬浮切换手型光标，并给出轻微高亮反馈
+            isHovering = hovering
+            if hovering {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
     }
 }
 
@@ -150,7 +161,6 @@ struct FloatingToolbar: View {
 
     var body: some View {
         ZStack {
-            // 调试：显示整个 GeometryReader 的边界
             Color.clear
 
             SelectionToolbar(onClose: onClose, onPin: onPin, onCopy: onCopy)
@@ -159,26 +169,15 @@ struct FloatingToolbar: View {
                         Color.clear
                             .onAppear {
                                 toolbarSize = toolbarGeometry.size
-                                print("📏 工具栏尺寸: \(toolbarGeometry.size)")
-                                print("🖼️ 屏幕尺寸: \(screenBounds)")
-                                print("📦 选区(AppKit坐标): \(selectionRect)")
-
-                                let pos = calculateSwiftUIPosition()
-                                print("📍 计算的工具栏位置(SwiftUI坐标): \(pos)")
                             }
                             .onChange(of: toolbarGeometry.size) { _, newSize in
                                 toolbarSize = newSize
-                                print("📏 工具栏尺寸变化: \(newSize)")
                             }
                     }
                 )
                 .position(calculateSwiftUIPosition())
         }
         .frame(width: screenBounds.width, height: screenBounds.height)
-        .onAppear {
-            print("🎬 FloatingToolbar appeared")
-            print("📐 View frame: width=\(screenBounds.width), height=\(screenBounds.height)")
-        }
     }
 
     /// 计算 SwiftUI 坐标系下的 position
@@ -186,50 +185,34 @@ struct FloatingToolbar: View {
     /// AppKit 坐标系：原点在左下角，Y 轴向上
     private func calculateSwiftUIPosition() -> CGPoint {
         guard toolbarSize.width > 0 && toolbarSize.height > 0 else {
-            // 工具栏尺寸还未确定，返回默认位置
-            print("⚠️ 工具栏尺寸未确定，使用默认位置")
+            // 工具栏尺寸还未确定，先放屏幕中心，等尺寸回调后再修正
             return CGPoint(x: screenBounds.width / 2, y: screenBounds.height / 2)
         }
 
         let padding: CGFloat = 12  // 工具栏与选区的间距
 
-        // 计算水平居中位置
-        var toolbarX = selectionRect.midX
-
-        // 确保工具栏不超出屏幕左右边界
+        // 靠选区右边对齐：工具栏右缘与选区右缘平齐，并确保不超出屏幕边界
+        var toolbarX = selectionRect.maxX - toolbarSize.width / 2
         let minX = toolbarSize.width / 2 + padding
         let maxX = screenBounds.width - toolbarSize.width / 2 - padding
         toolbarX = max(minX, min(maxX, toolbarX))
 
-        // 将 AppKit Y 坐标转换为 SwiftUI Y 坐标
-        // AppKit: selectionRect.minY 是选区底部（距离屏幕底部的距离）
-        // SwiftUI: 我们需要距离屏幕顶部的距离
+        // AppKit 的 minY 是选区底部（距屏幕底部的距离），转成距屏幕顶部的距离
         let selectionBottomInSwiftUI = screenBounds.height - selectionRect.minY
-
-        print("🔄 坐标转换: AppKit Y=\(selectionRect.minY) -> SwiftUI Y=\(selectionBottomInSwiftUI)")
 
         // 默认放在选区下方
         var toolbarY = selectionBottomInSwiftUI + padding + toolbarSize.height / 2
 
-        print("📍 初始工具栏位置: (\(toolbarX), \(toolbarY))")
-
-        // 检查是否超出屏幕底部
+        // 超出屏幕底部时放到选区上方；上方也放不下则放进选区内部顶部
         if toolbarY + toolbarSize.height / 2 > screenBounds.height {
-            // 超出底部，放在选区上方
             let selectionTopInSwiftUI = screenBounds.height - selectionRect.maxY
             toolbarY = selectionTopInSwiftUI - padding - toolbarSize.height / 2
 
-            print("⬆️ 底部空间不足，放在选区上方: Y=\(toolbarY)")
-
-            // 如果上方也放不下，放在选区内部顶部
             if toolbarY - toolbarSize.height / 2 < 0 {
                 toolbarY = selectionTopInSwiftUI + padding + toolbarSize.height / 2
-                print("⚠️ 上方也不足，放在选区内部: Y=\(toolbarY)")
             }
         }
 
-        let finalPos = CGPoint(x: toolbarX, y: toolbarY)
-        print("✅ 最终工具栏位置: \(finalPos)")
-        return finalPos
+        return CGPoint(x: toolbarX, y: toolbarY)
     }
 }
