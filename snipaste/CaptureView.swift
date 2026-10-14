@@ -705,8 +705,54 @@ class CaptureView: NSView {
     }
 
     private func handlePinAction() {
-        print("📌 置顶功能 - 待实现")
-        // TODO: 实现置顶功能
+        guard selectionRect != nil, state == .idle, !isCapturing else { return }
+        print("📌 置顶选区: \(selectionRect.map { "\($0.origin), \($0.size)" } ?? "nil")")
+
+        startPinProcess()
+    }
+
+    /// 置顶流程：捕获选区 -> 以悬浮窗口钉在桌面原位置 -> 结束截图会话
+    private func startPinProcess() {
+        guard !isCapturing, !isClosed else { return }
+        guard let rect = selectionRect else { return }
+        isCapturing = true
+
+        // 先隐藏工具栏再捕获（本应用窗口本就被捕获过滤器排除，这里主要为了视觉干净）
+        hideToolbar()
+        window?.alphaValue = 0.3
+
+        // 视图坐标 -> AppKit 全局坐标（贴图窗口按全局坐标摆放）
+        let windowOrigin = window?.frame.origin ?? .zero
+        let globalRect = rect.offsetBy(dx: windowOrigin.x, dy: windowOrigin.y)
+
+        currentCaptureTask?.cancel()
+        currentCaptureTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            guard let (image, _) = await self.captureSelectedRegion(rect) else {
+                await MainActor.run { [weak self] in
+                    guard let self = self, !self.isClosed else { return }
+                    print("❌ 置顶失败，恢复工具栏")
+                    self.isCapturing = false
+                    self.currentCaptureTask = nil
+                    self.window?.alphaValue = 1.0
+                    if let rect = self.selectionRect {
+                        self.showToolbar(for: rect)
+                    }
+                }
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                PinnedImageController.shared.pin(image: image, at: globalRect)
+
+                guard let self = self, !self.isClosed else { return }
+                self.isCapturing = false
+                self.currentCaptureTask = nil
+                self.safeCancelAndClose()
+                print("✅ 贴图完成，截图会话已结束")
+            }
+        }
     }
 
     private func handleCopyAction() {
@@ -844,39 +890,35 @@ class CaptureView: NSView {
         return (image, screen)
     }
 
-    private func captureAndCopyToClipboard(rect: CGRect) async -> Bool {
+    /// 整屏原生捕获后按选区做整数像素裁剪（复制与置顶共用）
+    /// 不走 sourceRect 缩放采样路径；缩放因子从实际捕获到的位图反推，
+    /// 保证裁剪与真实位图严格对齐、输出为 1:1 原图
+    /// - Returns: (裁剪后的图像, 图像所在的屏幕)；失败返回 nil
+    private func captureSelectedRegion(_ rect: CGRect) async -> (image: CGImage, screen: NSScreen)? {
         do {
             // 检查任务是否已取消
             guard !Task.isCancelled else {
                 print("⚠️ 任务已取消，停止截图")
-                return false
+                return nil
             }
 
-            // ===== Step 1~2：整屏原生捕获 + 整数像素裁剪 =====
-            // 不走 sourceRect + width/height 的缩放采样路径——那条路径由 SCK 内部
-            // 重采样决定输出尺寸，任何比例/取整偏差都会导致画面发虚。
-            // 整屏原生抓取 + CGImage.cropping 是纯像素提取，保证严格 1:1 原图。
-            let step1Start = Date()
-
+            let stepStart = Date()
             let (fullImage, screen) = try await grabFullScreenExcludingSelf()
             let screenHeight = screen.frame.height
 
-            let step1Duration = Date().timeIntervalSince(step1Start) * 1000
-            print("⏱️ [Step 1] 整屏捕获完成，耗时: \(Int(step1Duration))ms")
-            print("📊 整屏图像尺寸: \(fullImage.width)x\(fullImage.height)")
+            let stepDuration = Date().timeIntervalSince(stepStart) * 1000
+            print("⏱️ 整屏捕获完成，耗时: \(Int(stepDuration))ms, 图像 \(fullImage.width)x\(fullImage.height)")
 
             // 再次检查取消
             guard !Task.isCancelled else {
                 print("⚠️ 任务已取消，停止截图")
-                return false
+                return nil
             }
 
-            // ===== 整数物理像素裁剪（纯像素提取，无重采样） =====
-            // 缩放因子从"实际捕获到的位图"反推，而不是信任 backingScaleFactor，
-            // 保证裁剪计算与真实位图像素严格对齐
+            // 整数物理像素裁剪（纯像素提取，无重采样）
             guard screen.frame.width > 0, fullImage.width > 0 else {
                 print("❌ 屏幕或图像尺寸异常")
-                return false
+                return nil
             }
             let scaleFactor = CGFloat(fullImage.width) / screen.frame.width
 
@@ -894,89 +936,62 @@ class CaptureView: NSView {
             guard !cropRect.isEmpty, !cropRect.isNull,
                   let image = fullImage.cropping(to: cropRect) else {
                 print("❌ 选区裁剪失败: crop=\(cropRect)")
-                return false
+                return nil
             }
 
             print("✂️ 裁剪选区: 逻辑 \(Int(rect.width))x\(Int(rect.height))pt -> 物理 \(Int(cropW))x\(Int(cropH))px")
-
-            // 再次检查取消
-            guard !Task.isCancelled else {
-                print("⚠️ 任务已取消，停止截图")
-                return false
-            }
-
-            let step3Start = Date()
-            print("⏱️ [Step 4] 准备图像数据...")
-
-            // 直接在当前上下文生成 PNG 数据，不使用嵌套 Task
-            print("⏱️ [后台] 开始生成 PNG 数据...")
-            let dataStart = Date()
-
-            // 创建 NSBitmapImageRep 来生成高质量图像数据
-            let bitmapRep = NSBitmapImageRep(cgImage: image)
-
-            // 正确设置逻辑尺寸（单位：points）
-            bitmapRep.size = NSSize(width: CGFloat(image.width) / scaleFactor, height: CGFloat(image.height) / scaleFactor)
-
-            print("📊 BitmapRep 像素尺寸: \(bitmapRep.pixelsWide)x\(bitmapRep.pixelsHigh)")
-            print("📊 BitmapRep 逻辑尺寸: \(bitmapRep.size)")
-            print("📊 计算的 DPI: \(72.0 * scaleFactor)") // 标准 72 DPI * 缩放因子
-
-            // 使用 TIFF 格式（无损且保留所有元数据）
-            guard let tiffData = bitmapRep.tiffRepresentation else {
-                print("❌ [后台] 无法生成 TIFF 数据")
-                return false
-            }
-
-            let dataDuration = Date().timeIntervalSince(dataStart) * 1000
-            print("⏱️ [后台] TIFF 数据生成完成，耗时: \(Int(dataDuration))ms, 大小: \(tiffData.count) bytes")
-
-            let step3Duration = Date().timeIntervalSince(step3Start) * 1000
-            print("⏱️ [Step 4] 图像数据准备完成，总耗时: \(Int(step3Duration))ms")
-
-            // 最后检查取消
-            guard !Task.isCancelled else {
-                print("⚠️ 任务已取消，停止截图")
-                return false
-            }
-
-            // 在主线程操作剪贴板
-            let success = await MainActor.run {
-                print("⏱️ [主线程] 写入剪贴板...")
-                let pasteboardStart = Date()
-
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-
-                // 方法1：TIFF，默认无压缩，逐字节保留原始像素；
-                // 先写入的类型成为首选类型，粘贴方优先取用
-                let tiffResult = pasteboard.setData(tiffData, forType: .tiff)
-                print("   - TIFF 写入: \(tiffResult ? "✅" : "❌")")
-
-                // 方法2：PNG，无损压缩——解码后像素与原图完全一致，
-                // 兼容只认 PNG 的应用；两者都不会有画质损失
-                if let pngData = bitmapRep.representation(using: .png, properties: [:]) {
-                    let pngResult = pasteboard.setData(pngData, forType: .png)
-                    print("   - PNG 写入: \(pngResult ? "✅" : "❌")")
-                }
-
-                let duration = Date().timeIntervalSince(pasteboardStart) * 1000
-                print("⏱️ [主线程] 剪贴板写入完成，耗时: \(Int(duration))ms")
-
-                return tiffResult
-            }
-
-            if success {
-                print("✅ 截图已复制到剪贴板")
-            } else {
-                print("❌ 剪贴板写入失败")
-            }
-            return success
+            return (image, screen)
         } catch {
             print("❌ 截图失败: \(error)")
             print("❌ 错误详情: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func captureAndCopyToClipboard(rect: CGRect) async -> Bool {
+        guard let (image, _) = await captureSelectedRegion(rect) else { return false }
+
+        // 创建 NSBitmapImageRep 并设置逻辑尺寸（点），
+        // Retina 下自动携带 2x DPI 元数据，粘贴到文档显示正确的物理大小
+        let bitmapRep = NSBitmapImageRep(cgImage: image)
+        bitmapRep.size = rect.size
+        print("📊 BitmapRep 像素 \(bitmapRep.pixelsWide)x\(bitmapRep.pixelsHigh), 逻辑 \(bitmapRep.size)")
+
+        // TIFF 默认无压缩，逐字节保留原始像素
+        guard let tiffData = bitmapRep.tiffRepresentation else {
+            print("❌ 无法生成 TIFF 数据")
             return false
         }
+
+        // 最后检查取消
+        guard !Task.isCancelled else {
+            print("⚠️ 任务已取消，停止截图")
+            return false
+        }
+
+        // 在主线程操作剪贴板
+        let success = await MainActor.run { () -> Bool in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+
+            // 方法1：TIFF，无损；先写入的类型成为首选类型，粘贴方优先取用
+            let tiffResult = pasteboard.setData(tiffData, forType: .tiff)
+            print("   - TIFF 写入: \(tiffResult ? "✅" : "❌")")
+
+            // 方法2：PNG，无损压缩，兼容只认 PNG 的应用
+            if let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+                let pngResult = pasteboard.setData(pngData, forType: .png)
+                print("   - PNG 写入: \(pngResult ? "✅" : "❌")")
+            }
+            return tiffResult
+        }
+
+        if success {
+            print("✅ 截图已复制到剪贴板")
+        } else {
+            print("❌ 剪贴板写入失败")
+        }
+        return success
     }
 
     // MARK: - 键盘事件
