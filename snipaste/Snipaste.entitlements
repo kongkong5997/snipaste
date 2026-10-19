@@ -6,5 +6,8 @@
     <true/>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+    <!-- 检查更新需要访问网络 -->
+    <key>com.apple.security.network.client</key>
+    <true/>
 </dict>
 </plist>

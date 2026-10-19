@@ -30,6 +30,14 @@ class ScreenCapturePermission {
         }
     }
 
+    /// 打开系统设置里的"屏幕录制"权限页（设置窗口与引导弹窗共用）
+    static func openPrivacySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     /// 显示权限引导弹窗
     static func showPermissionAlert() {
         let alert = NSAlert()
@@ -41,10 +49,7 @@ class ScreenCapturePermission {
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            // 打开系统偏好设置的隐私设置页面
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                NSWorkspace.shared.open(url)
-            }
+            openPrivacySettings()
         }
     }
 }

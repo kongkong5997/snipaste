@@ -14,6 +14,14 @@ final class SnappingEngine {
     /// 候选窗口框（视图坐标，AppKit 左下原点，单位 pt）
     private(set) var candidateRects: [CGRect] = []
 
+    /// 吸附开关：关闭时不收集候选，命中与吸附直接返回原值。
+    /// 开关收在引擎内部，调用方不必在每处都判断
+    var isEnabled = true {
+        didSet {
+            if !isEnabled { candidateRects = [] }
+        }
+    }
+
     /// 最小窗口尺寸：小于此视为噪点
     private static let minWindowSize: CGFloat = 16
 
@@ -25,7 +33,11 @@ final class SnappingEngine {
     /// 枚举屏幕上的应用窗口，换算到视图坐标并缓存。
     /// 吸附目标是"完整的应用窗口框"：按窗口前后顺序做可见性判定，
     /// 完全被遮挡的窗口排除，部分可见的窗口仍吸附其完整边框。
-    func reload(viewBounds: NSRect) {
+    func reload(viewBounds: NSRect, screenOrigin: NSPoint) {
+        guard isEnabled else {
+            candidateRects = []
+            return
+        }
         guard let windowList = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
@@ -46,13 +58,10 @@ final class SnappingEngine {
             guard let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
                   let cgBounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }
 
-            // CG 全局（左上原点）-> AppKit 全局（左下原点）-> 本屏视图坐标
-            let local = NSRect(
-                x: cgBounds.minX - viewBounds.minX,
-                y: primaryHeight - cgBounds.maxY - viewBounds.minY,
-                width: cgBounds.width,
-                height: cgBounds.height
-            )
+            // CG 全局（左上原点）-> 本屏视图坐标（左下原点）
+            let local = Self.viewRect(fromCGRect: cgBounds,
+                                      primaryHeight: primaryHeight,
+                                      screenOrigin: screenOrigin)
 
             // 与本屏无交集的窗口（其它显示器上的）不参与
             guard local.intersects(viewBounds) else { continue }
@@ -85,6 +94,16 @@ final class SnappingEngine {
 
         candidateRects = rects
         print("🧲 窗口吸附候选就绪: \(rects.count) 个可见窗口")
+    }
+
+    /// CG 全局（左上原点）-> 本屏视图坐标（左下原点）。
+    /// screenOrigin 是截图窗口在全局坐标中的原点：副屏不是 (0,0)，
+    /// 漏减会让该屏所有候选窗口都判为"与本屏无交集"而静默失效
+    static func viewRect(fromCGRect cgRect: CGRect, primaryHeight: CGFloat, screenOrigin: NSPoint) -> NSRect {
+        NSRect(x: cgRect.minX - screenOrigin.x,
+               y: primaryHeight - cgRect.maxY - screenOrigin.y,
+               width: cgRect.width,
+               height: cgRect.height)
     }
 
     /// 从 rect 中减去 cover 覆盖的部分，返回剩余子矩形集合（最多 4 块）
@@ -120,6 +139,7 @@ final class SnappingEngine {
 
     /// 命中检测：返回包含该点（含边缘容差）的候选窗口中面积最小的一个
     func hitTest(at point: NSPoint, edgeTolerance: CGFloat = 6) -> NSRect? {
+        guard isEnabled else { return nil }
         var best: NSRect?
         var bestArea = CGFloat.greatestFiniteMagnitude
         for rect in candidateRects {
@@ -136,7 +156,7 @@ final class SnappingEngine {
 
     /// 点吸附：x/y 各自寻找最近的候选窗口边缘，距离 ≤ 容差才贴合
     func snapPoint(_ point: NSPoint, edgeTolerance: CGFloat = 6) -> NSPoint {
-        guard !candidateRects.isEmpty else { return point }
+        guard isEnabled, !candidateRects.isEmpty else { return point }
 
         var x = point.x
         var y = point.y

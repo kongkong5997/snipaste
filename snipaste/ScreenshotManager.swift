@@ -8,6 +8,14 @@
 import AppKit
 import ScreenCaptureKit
 
+/// 截图会话的进入方式
+enum CaptureMode {
+    case region        // 手动拖拽选择区域
+    case fullScreen    // 整个屏幕（多显示器时为全部显示器）
+    case window        // 点选窗口：自动高亮窗口，点击即选中
+    case repeatLast    // 恢复上一次的选区
+}
+
 class ScreenshotManager {
     static let shared = ScreenshotManager()
     private var captureWindow: CaptureWindow?
@@ -15,8 +23,9 @@ class ScreenshotManager {
     private init() {}
 
     /// 开始截图 - 显示全屏截图窗口
-    func startCapture() {
-        print("🎬 startCapture 被调用")
+    /// - Parameter mode: 进入方式（区域拖拽 / 全屏 / 窗口点选 / 重复上次选区）
+    func startCapture(mode: CaptureMode = .region) {
+        print("🎬 startCapture 被调用 mode=\(mode)")
         print("   - 当前 captureWindow: \(captureWindow != nil ? "存在" : "nil")")
 
         // 检查权限
@@ -31,13 +40,15 @@ class ScreenshotManager {
         captureWindow = nil
         print("   - 已清理旧窗口")
 
-        // 选择鼠标所在的屏幕：多显示器时在哪个屏触发就截哪个屏，
-        // 后续 CaptureView 的坐标转换和捕获都以这块屏为准
-        let mouseLocation = NSEvent.mouseLocation
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main else {
+        // 覆盖所有显示器的并集：支持跨屏选区；单屏时就是该屏本身
+        let union = DisplayStitcher.unionFrame(of: NSScreen.screens.map { $0.frame })
+        guard !union.isNull, union.width > 0, union.height > 0 else {
             print("❌ 无法获取屏幕")
             return
         }
+
+        // 隐藏设置窗口：本应用的窗口不会进入截图，避免"看得见却截不到"的困惑
+        SettingsWindowController.shared.hideDuringCapture()
 
         print("   - 创建新窗口...")
 
@@ -45,7 +56,7 @@ class ScreenshotManager {
         NSApp.activate(ignoringOtherApps: true)
 
         // 创建全屏透明窗口
-        captureWindow = CaptureWindow(screen: screen)
+        captureWindow = CaptureWindow(windowFrame: union, mode: mode)
 
         // 确保窗口获得焦点
         captureWindow?.makeKeyAndOrderFront(nil)
@@ -66,6 +77,9 @@ class ScreenshotManager {
             print("⚠️ 截图窗口已经关闭，跳过重复调用")
             return
         }
+
+        // 截图会话结束，恢复之前隐藏的设置窗口
+        SettingsWindowController.shared.restoreAfterCapture()
 
         print("🚪 开始关闭截图窗口")
 

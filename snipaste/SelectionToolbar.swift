@@ -15,6 +15,17 @@ final class ToolbarIconButton: NSButton {
 
     private let idleBackground = NSColor.white.withAlphaComponent(0.10)
     private let hoverBackground = NSColor.white.withAlphaComponent(0.28)
+    private let activeBackground = NSColor.white.withAlphaComponent(0.40)
+
+    private var isHovered = false
+
+    /// 激活状态（标注工具被选中时持续高亮）
+    var isActive = false {
+        didSet {
+            guard isActive != oldValue else { return }
+            updateBackground()
+        }
+    }
 
     init(icon: String, label: String, action: @escaping () -> Void) {
         actionClosure = action
@@ -28,10 +39,10 @@ final class ToolbarIconButton: NSButton {
         contentTintColor = .white
         setAccessibilityLabel(label)
 
-        // 自定义悬浮高亮背景
+        // 自定义背景（悬浮 / 激活高亮）
         wantsLayer = true
-        layer?.backgroundColor = idleBackground.cgColor
         layer?.cornerRadius = 8
+        updateBackground()
 
         target = self
         self.action = #selector(clicked)  // 显式 self：避免与同名 init 参数遮蔽
@@ -68,13 +79,28 @@ final class ToolbarIconButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = hoverBackground.cgColor
+        isHovered = true
+        updateBackground()
         NSCursor.pointingHand.set()
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = idleBackground.cgColor
+        isHovered = false
+        updateBackground()
         NSCursor.arrow.set()
+    }
+
+    /// 背景优先级：激活 > 悬浮 > 常态
+    private func updateBackground() {
+        let color: NSColor
+        if isActive {
+            color = activeBackground
+        } else if isHovered {
+            color = hoverBackground
+        } else {
+            color = idleBackground
+        }
+        layer?.backgroundColor = color.cgColor
     }
 }
 
@@ -82,12 +108,18 @@ final class ToolbarIconButton: NSButton {
 
 final class SelectionToolbarView: NSStackView {
 
-    /// fittingSize 异常时的兜底尺寸（7 按钮 + 分隔线 + 间距 + 内边距的估算值）
-    static let estimatedSize = NSSize(width: 386, height: 100)
+    /// fittingSize 异常时的兜底尺寸（10 工具 + 分隔线 + 5 动作按钮的估算值）
+    static let estimatedSize = NSSize(width: 598, height: 100)
 
-    init(onClose: @escaping () -> Void,
+    /// 标注工具按钮索引（用于同步激活高亮）
+    private var toolButtons: [AnnotationTool: ToolbarIconButton] = [:]
+
+    init(onSelectTool: @escaping (AnnotationTool) -> Void,
+         onClose: @escaping () -> Void,
          onPin: @escaping () -> Void,
-         onCopy: @escaping () -> Void) {
+         onCopy: @escaping () -> Void,
+         onSave: @escaping () -> Void,
+         onScroll: @escaping () -> Void) {
         super.init(frame: .zero)
 
         orientation = .horizontal
@@ -100,23 +132,35 @@ final class SelectionToolbarView: NSStackView {
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
         layer?.cornerRadius = 6
 
-        let buttons: [NSView] = [
-            ToolbarIconButton(icon: "pencil", label: "画笔") { print("✏️ 画笔工具") },
-            ToolbarIconButton(icon: "square", label: "方框") { print("⬜ 方框工具") },
-            ToolbarIconButton(icon: "arrow.up.right", label: "箭头") { print("↗️ 箭头工具") },
-            ToolbarIconButton(icon: "checkerboard.rectangle", label: "马赛克") { print("🔲 马赛克工具") },
-            Self.separator(),
-            ToolbarIconButton(icon: "pin", label: "置顶", action: onPin),
-            ToolbarIconButton(icon: "doc.on.doc", label: "复制", action: onCopy),
-            ToolbarIconButton(icon: "xmark", label: "关闭", action: onClose),
-        ]
-        for view in buttons {
+        var views: [NSView] = []
+        for tool in AnnotationTool.allCases {
+            let button = ToolbarIconButton(icon: tool.icon, label: tool.label) {
+                onSelectTool(tool)
+            }
+            toolButtons[tool] = button
+            views.append(button)
+        }
+        views.append(Self.separator())
+        views.append(ToolbarIconButton(icon: "scroll", label: "滚动截图", action: onScroll))
+        views.append(ToolbarIconButton(icon: "pin", label: "置顶", action: onPin))
+        views.append(ToolbarIconButton(icon: "doc.on.doc", label: "复制", action: onCopy))
+        views.append(ToolbarIconButton(icon: "square.and.arrow.down", label: "保存", action: onSave))
+        views.append(ToolbarIconButton(icon: "xmark", label: "关闭", action: onClose))
+
+        for view in views {
             addArrangedSubview(view)
         }
     }
 
     required init?(coder: NSCoder) {
         fatalError("不支持从 XIB 初始化")
+    }
+
+    /// 更新激活工具的按钮高亮（nil 表示无工具激活）
+    func setActiveTool(_ tool: AnnotationTool?) {
+        for (candidate, button) in toolButtons {
+            button.isActive = (candidate == tool)
+        }
     }
 
     private static func separator() -> NSView {

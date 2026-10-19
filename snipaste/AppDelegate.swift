@@ -6,44 +6,42 @@
 //
 
 import AppKit
-import Carbon.HIToolbox
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private var hotKeyRef: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 设置应用不显示在 Dock
         NSApp.setActivationPolicy(.accessory)
 
-        // 注册全局快捷键 Cmd+Shift+X
-        setupHotKeys()
+        // 全局快捷键：装配动作后按当前设置注册
+        // （默认 ⌘⇧X 开始截图，⌥⌘V 从剪贴板贴图，均可在设置页修改）
+        HotKeyManager.shared.onAction = { action in
+            switch action {
+            case .screenshot:
+                ScreenshotManager.shared.startCapture()
+            case .fullScreen:
+                ScreenshotManager.shared.startCapture(mode: .fullScreen)
+            case .windowCapture:
+                ScreenshotManager.shared.startCapture(mode: .window)
+            case .repeatLast:
+                ScreenshotManager.shared.startCapture(mode: .repeatLast)
+            case .pinFromClipboard:
+                PinnedImageController.shared.pinFromPasteboard()
+            case .togglePins:
+                PinnedImageController.shared.toggleVisibility()
+            }
+        }
+        HotKeyManager.shared.resume()
 
         // 检查屏幕录制权限
         ScreenCapturePermission.checkAndRequestPermission()
-    }
 
-    func setupHotKeys() {
-        // 使用 RegisterEventHotKey 注册全局快捷键：
-        // 不需要"输入监听"权限，且本应用处于前台时同样生效（NSEvent 全局监听两者都做不到）
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            print("⌨️ 快捷键 Cmd+Shift+X 被按下")
-            ScreenshotManager.shared.startCapture()
-            return noErr
-        }, 1, &eventType, nil, nil)
-
-        // X 的 keyCode 是 7（kVK_ANSI_X）
-        var hotKeyID = EventHotKeyID(signature: OSType(0x534E4950) /* 'SNIP' */, id: 1)
-        let status = RegisterEventHotKey(
-            UInt32(kVK_ANSI_X),
-            UInt32(cmdKey | shiftKey),
-            hotKeyID,
-            GetApplicationEventTarget(),
-            0,
-            &hotKeyRef
-        )
-        if status != noErr {
-            print("❌ 全局快捷键注册失败: \(status)")
+        // 首次运行：弹一次使用说明
+        if !UserDefaults.standard.bool(forKey: WelcomeWindowController.hasSeenKey) {
+            UserDefaults.standard.set(true, forKey: WelcomeWindowController.hasSeenKey)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                WelcomeWindowController.shared.show()
+            }
         }
     }
 

@@ -11,9 +11,11 @@ class CaptureWindow: NSWindow {
     private var captureView: CaptureView
     private var viewController: NSViewController
 
-    init(screen: NSScreen) {
-        let rect = screen.frame
+    /// windowFrame 是所有显示器的并集（全局坐标）：窗口横跨多屏，支持跨屏选区
+    init(windowFrame: NSRect, mode: CaptureMode = .region) {
+        let rect = windowFrame
         captureView = CaptureView(frame: rect)
+        captureView.initialMode = mode
         viewController = NSViewController()
         viewController.view = captureView
 
