@@ -58,7 +58,8 @@ enum ScrollStitcher {
 
         var bestOffset = 0
         var bestScore = Double.greatestFiniteMagnitude
-        for offset in 0...lastCandidate {
+        // 相同得分时优先选择较小位移，避免重复背景被误当成大段新增内容。
+        for offset in stride(from: lastCandidate, through: 0, by: -1) {
             var difference = 0
             let width = previous.width
             for row in 0..<template {
@@ -82,10 +83,13 @@ enum ScrollStitcher {
     /// 0 = 没有新内容（已到底或没滚动）；nil = 匹配不可信（滚动过快或画面变动太大）
     static func appendedRows(previous: Signature, next: Signature,
                             templateHeight: Int, scoreThreshold: Double = 6) -> Int? {
+        // 完全静止的画面不需要搜索模板，空白区域也不能被重复追加。
+        if previous.width == next.width, previous.height == next.height,
+           previous.pixels == next.pixels { return 0 }
         let (offset, score) = matchOffset(previous: previous, next: next, templateHeight: templateHeight)
         guard score <= scoreThreshold else { return nil }
 
-        // 模板在新帧里的位置整体上移说明内容向上滚动了；offset 为 0 表示没有新内容
+        // 模板在新帧里上移后，底部超出模板的部分就是新增内容。
         let consumed = offset + min(templateHeight, previous.height, next.height)
         return max(0, next.height - consumed)
     }

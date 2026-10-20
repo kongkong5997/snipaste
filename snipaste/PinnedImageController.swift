@@ -221,6 +221,7 @@ final class PinImageView: NSImageView {
         // 图像按视图尺寸等比显示：截图贴图的窗口尺寸与图像逻辑尺寸一致，即 1:1；
         // 剪贴板里的超大图片会被缩到屏幕范围内
         imageScaling = .scaleProportionallyUpOrDown
+        toolTip = "滚轮向上放大、向下缩小；拖动移动；右键查看更多操作"
         wantsLayer = true
     }
 
@@ -329,10 +330,17 @@ final class PinImageView: NSImageView {
     /// 滚轮 / 触控板滑动缩放（鼠标滚轮一格步长大，触控板细滑步长小）
     override func scrollWheel(with event: NSEvent) {
         guard let window = window as? PinnedImageWindow else { return }
-        let delta = event.scrollingDeltaY
-        guard abs(delta) > 0.01 else { return }
-        let step: CGFloat = event.hasPreciseScrollingDeltas ? 0.01 : 0.08
-        window.zoom(by: min(max(1 + delta * step, 0.5), 2))
+        // 缩放只跟随主动的纵向滚动，避免横向滑动和松手后的惯性继续改变图片大小。
+        guard event.momentumPhase.isEmpty,
+              abs(event.scrollingDeltaY) > 0.01,
+              abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) else { return }
+
+        // 抵消系统自然滚动对事件方向的反转，保持滚轮向上放大、向下缩小。
+        let delta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+        let step: CGFloat = event.hasPreciseScrollingDeltas ? 0.01 : 0.14
+        // 指数缩放让正反滚动互为逆操作，同时限制单次增量，避免快速滚动时尺寸突变。
+        let exponent = min(max(delta * step, -0.4), 0.4)
+        window.zoom(by: exp(exponent))
     }
 
     // MARK: - 菜单动作

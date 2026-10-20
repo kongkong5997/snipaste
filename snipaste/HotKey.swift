@@ -41,6 +41,10 @@ struct HotKeyDescriptor: Equatable {
     static let defaultTogglePins = HotKeyDescriptor(keyCode: UInt32(kVK_ANSI_H),
                                                     modifiers: UInt32(controlKey | cmdKey))
 
+    /// 仅在长截图期间注册：页面应用获得焦点后仍可结束截图。
+    static let scrollCaptureFinish = HotKeyDescriptor(keyCode: UInt32(kVK_Return),
+                                                      modifiers: UInt32(controlKey | cmdKey))
+
     var isDisabled: Bool { keyCode == Self.disabledKeyCode }
 
     /// 是否可作为全局快捷键：
@@ -155,6 +159,8 @@ final class HotKeyManager: ObservableObject {
     private var eventHandlerInstalled = false
     private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var isSuspended = false
+    private static let scrollCaptureFinishID: UInt32 = 7
+    private var scrollCaptureFinishAction: (() -> Void)?
 
     private init() {}
 
@@ -168,13 +174,32 @@ final class HotKeyManager: ObservableObject {
 
         var failures: [String] = []
         for (action, descriptor) in Self.descriptors(from: AppSettings.shared) {
-            if !register(action, descriptor: descriptor) { failures.append(action.title) }
+            if !register(id: action.rawValue, title: action.title, descriptor: descriptor) {
+                failures.append(action.title)
+            }
+        }
+        if scrollCaptureFinishAction != nil,
+           !register(id: Self.scrollCaptureFinishID, title: "结束长截图", descriptor: .scrollCaptureFinish) {
+            failures.append("结束长截图")
         }
 
         registrationError = failures.isEmpty
             ? nil
             : "以下快捷键注册失败，可能已被系统或其他应用占用：\(failures.joined(separator: "、"))"
         if let registrationError { print("⌨️⚠️ \(registrationError)") }
+    }
+
+    /// 复用全局快捷键通路，注册失败时让控制条提示用户使用按钮。
+    func beginScrollCapture(onFinish: @escaping () -> Void) -> Bool {
+        scrollCaptureFinishAction = onFinish
+        apply()
+        return hotKeyRefs[Self.scrollCaptureFinishID] != nil
+    }
+
+    /// 会话结束立即释放组合键，不影响用户在其他应用中的日常操作。
+    func endScrollCapture() {
+        scrollCaptureFinishAction = nil
+        apply()
     }
 
     /// 动作 -> 当前设置的快捷键
@@ -202,18 +227,18 @@ final class HotKeyManager: ObservableObject {
 
     // MARK: - 内部
 
-    private func register(_ action: Action, descriptor: HotKeyDescriptor) -> Bool {
+    private func register(id: UInt32, title: String, descriptor: HotKeyDescriptor) -> Bool {
         guard !descriptor.isDisabled else { return true }
 
         var ref: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: OSType(0x534E4950) /* 'SNIP' */, id: action.rawValue)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x534E4950) /* 'SNIP' */, id: id)
         let status = RegisterEventHotKey(descriptor.keyCode, descriptor.modifiers, hotKeyID,
                                          GetApplicationEventTarget(), 0, &ref)
         guard status == noErr, let ref else {
-            print("⌨️⚠️ 注册失败 [\(action.title)] \(descriptor.displayString)，状态 \(status)")
+            print("⌨️⚠️ 注册失败 [\(title)] \(descriptor.displayString)，状态 \(status)")
             return false
         }
-        hotKeyRefs[action.rawValue] = ref
+        hotKeyRefs[id] = ref
         return true
     }
 
@@ -246,6 +271,10 @@ final class HotKeyManager: ObservableObject {
     }
 
     private func handle(id: UInt32) {
+        if id == Self.scrollCaptureFinishID {
+            scrollCaptureFinishAction?()
+            return
+        }
         guard let action = Action(rawValue: id) else { return }
         print("⌨️ 快捷键触发: \(action.title)")
         onAction?(action)

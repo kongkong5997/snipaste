@@ -204,7 +204,7 @@ class CaptureView: NSView {
 
         // 冻结底图铺满全屏：激活标注工具后画面内容固定，
         // 标注预览与最终导出都以它为基准（马赛克也需要真实像素取样）
-        if let frozenImage {
+        if scrollSession == nil, let frozenImage {
             context.draw(frozenImage, in: bounds)
         }
 
@@ -232,7 +232,7 @@ class CaptureView: NSView {
             context.restoreGState()
 
             // 标注层：裁剪在选区内绘制，与导出的裁剪口径一致
-            if let selection = selectionRect {
+            if scrollSession == nil, let selection = selectionRect {
                 context.saveGState()
                 context.clip(to: selection)
                 AnnotationRenderer.render(displayAnnotations,
@@ -244,19 +244,19 @@ class CaptureView: NSView {
             }
 
             // 绘制选区边框
-            NSColor.white.setStroke()
+            (scrollSession == nil ? NSColor.white : NSColor.systemBlue).setStroke()
             let borderWidth: CGFloat = 2.0
             let borderPath = NSBezierPath(rect: rect)
             borderPath.lineWidth = borderWidth
             borderPath.stroke()
 
             // 只有真实选区才绘制 8 个缩放控制点（吸附预览不可交互，不画）
-            if isActiveSelection {
+            if isActiveSelection, scrollSession == nil {
                 drawSelectionHandles(rect)
             }
 
             // 绘制尺寸信息（可在设置里关闭）
-            if settings.showSizeLabel {
+            if settings.showSizeLabel, scrollSession == nil {
                 drawSizeLabel(for: rect)
             }
         } else {
@@ -1198,16 +1198,19 @@ class CaptureView: NSView {
     /// 完成后打开长图预览并结束会话；取消则恢复截图会话继续操作
     private func startScrollCapture() {
         guard let rect = selectionRect, state == .idle, !isCapturing, !isClosed else { return }
+        commitTextEditing()
         isCapturing = true
         hideToolbar()
 
-        // 让出鼠标事件，滚动才能落到下层应用；键盘仍由本窗口接收（Esc 可取消）
+        // 让出鼠标事件以操作下层页面；滚动模式暂时隐藏冻结底图及标注，返回选区时恢复。
         window?.ignoresMouseEvents = true
+        NSCursor.arrow.set()
 
         let session = ScrollCaptureSession(region: rect, view: self) { [weak self] image, logicalSize in
             guard let self else { return }
             self.scrollSession = nil
             self.window?.ignoresMouseEvents = false
+            self.needsDisplay = true
 
             if let image {
                 print("🧵 滚动截图完成，逻辑尺寸 \(Int(logicalSize.width))x\(Int(logicalSize.height))pt")
@@ -1227,13 +1230,9 @@ class CaptureView: NSView {
             }
         }
         scrollSession = session
+        needsDisplay = true
         session.start()
         print("🧵 进入滚动截图模式，选区 \(Int(rect.width))x\(Int(rect.height))pt")
-    }
-
-    /// 取消滚动截图（完成回调里会恢复截图会话）
-    private func cancelScrollCapture() {
-        scrollSession?.cancel()
     }
 
     // MARK: - 动作键与保存
@@ -1906,11 +1905,9 @@ class CaptureView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        // 滚动截图进行中：只响应 Esc（取消），其余按键忽略
-        if scrollSession != nil {
-            if event.keyCode == 53 {
-                cancelScrollCapture()
-            }
+        // 滚动截图进行中：回车完成、空格暂停 / 继续、Esc 返回选区。
+        if let scrollSession {
+            _ = scrollSession.handleKeyDown(event)
             return
         }
 
