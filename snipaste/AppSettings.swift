@@ -56,6 +56,7 @@ final class AppSettings: ObservableObject {
         static let maskOpacity = "capture.maskOpacity"
         static let annotationColor = "annotation.color"
         static let annotationLineWidth = "annotation.lineWidth"
+        static let annotationFontSize = "annotation.fontSize"
         static let pinDoubleClickClose = "pin.doubleClickClose"
         static let saveFormat = "save.format"
         static let jpegQuality = "save.jpegQuality"
@@ -184,6 +185,11 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(annotationLineWidth, forKey: Key.annotationLineWidth) }
     }
 
+    /// 文字字号独立于描边粗细，切换箭头等工具时不会连带改变文字大小。
+    @Published var annotationFontSize: Double {
+        didSet { defaults.set(annotationFontSize, forKey: Key.annotationFontSize) }
+    }
+
     // MARK: - 贴图
 
     /// 双击贴图关闭（关掉可避免误触，右键菜单仍可关闭）
@@ -277,8 +283,14 @@ final class AppSettings: ObservableObject {
         maskOpacity = defaults.object(forKey: Key.maskOpacity) as? Double ?? 0.3
         annotationColor = Self.loadColor(from: defaults, key: Key.annotationColor)
             ?? AnnotationRenderer.defaultStrokeColor
-        annotationLineWidth = defaults.object(forKey: Key.annotationLineWidth) as? Double
+        let lineWidth = defaults.object(forKey: Key.annotationLineWidth) as? Double
             ?? Double(AnnotationRenderer.defaultStrokeWidth)
+        annotationLineWidth = lineWidth
+        // 首次使用独立字号时沿用旧的显示大小，保留已有用户的文字尺寸。
+        let fontSize = defaults.object(forKey: Key.annotationFontSize) as? Double ?? max(14, lineWidth * 5)
+        annotationFontSize = fontSize
+        // 立即保存迁移值，避免仅修改线宽后重启应用，字号又跟随线宽变化。
+        defaults.set(fontSize, forKey: Key.annotationFontSize)
         pinDoubleClickClose = defaults.object(forKey: Key.pinDoubleClickClose) as? Bool ?? true
         fullScreenShortcut = Self.loadShortcut(from: defaults,
                                                codeKey: Key.fullScreenKeyCode,
@@ -342,6 +354,7 @@ final class AppSettings: ObservableObject {
         maskOpacity = 0.3
         annotationColor = AnnotationRenderer.defaultStrokeColor
         annotationLineWidth = Double(AnnotationRenderer.defaultStrokeWidth)
+        annotationFontSize = max(14, Double(AnnotationRenderer.defaultStrokeWidth) * 5)
         pinDoubleClickClose = true
         saveFormat = .png
         jpegQuality = 0.9

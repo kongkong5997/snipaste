@@ -56,6 +56,8 @@ class CaptureView: NSView {
     // 若作为子视图嵌入 CaptureView，SwiftUI 未接住的鼠标事件会沿响应者链
     // 上抛给 CaptureView 被静默吞掉；独立面板彻底切断这条通路
     private var toolbarPanel: NSPanel?
+    /// 主工具栏的附属样式栏，独立面板保证按钮可点击并跟随主工具栏移动。
+    private var annotationOptionsPanel: NSPanel?
     private var isCapturing = false  // 防止重复截图
     private var isClosed = false  // 防止重复关闭
     private var currentCaptureTask: Task<Void, Never>?  // 当前截图任务
@@ -790,6 +792,7 @@ class CaptureView: NSView {
     private func setTool(_ tool: AnnotationTool) {
         guard !isClosed, !isCapturing, state == .idle, selectionRect != nil else { return }
         guard activeTool != tool else { return }
+        commitTextEditing()
         activeTool = tool
         inProgressAnnotation = nil
         // 冻结底图：保证标注预览、马赛克取样与导出结果完全一致
@@ -798,6 +801,7 @@ class CaptureView: NSView {
             ensureBlurredBackground()
         }
         toolbarViewRef?.setActiveTool(tool)
+        showAnnotationOptions()
         needsDisplay = true
         print("🎨 已激活标注工具: \(tool.label)")
     }
@@ -810,6 +814,7 @@ class CaptureView: NSView {
         activeTool = nil
         inProgressAnnotation = nil
         toolbarViewRef?.setActiveTool(nil)
+        hideAnnotationOptions()
         if annotations.isEmpty {
             releaseFrozenBackground()
         }
@@ -868,9 +873,25 @@ class CaptureView: NSView {
         }
     }
 
-    /// 文字标注字号：由线宽设置推导（线宽越大字越大）
+    /// 文字字号独立于箭头 / 画笔线宽，由快捷样式栏设置。
     private var textFontSize: CGFloat {
-        max(14, CGFloat(settings.annotationLineWidth) * 5)
+        CGFloat(settings.annotationFontSize)
+    }
+
+    /// 非激活样式面板不会提交输入；调整字号或颜色时同步更新正在编辑的文字。
+    private func updateTextEditorStyle() {
+        guard let field = textEditor else { return }
+        let font = NSFont.systemFont(ofSize: textFontSize, weight: .medium)
+        field.font = font
+        field.textColor = settings.annotationColor
+        if let editor = field.currentEditor() as? NSTextView {
+            editor.font = font
+            editor.textColor = settings.annotationColor
+            editor.insertionPointColor = settings.annotationColor
+        }
+        let size = (field.stringValue as NSString).size(withAttributes: [.font: font])
+        field.frame.size = NSSize(width: max(120, min(size.width + 28, 640)), height: textFontSize + 8)
+        needsDisplay = true
     }
 
     /// 开始编辑文字标注：点击处放一个内联输入框，回车 / 点别处提交，Esc 取消
@@ -1462,6 +1483,48 @@ class CaptureView: NSView {
         toolbarPanel = panel
         toolbarViewRef = toolbarView
         toolbarView.setActiveTool(activeTool)   // 重建后同步激活工具高亮
+        showAnnotationOptions()
+    }
+
+    /// 与参考图一致，在选中绘图工具后显示第二条紧凑样式栏。
+    private func showAnnotationOptions() {
+        hideAnnotationOptions()
+        guard let toolbarPanel, let tool = activeTool, !tool.isBrush, tool != .eraser else { return }
+        let options = AnnotationOptionsView(tool: tool) { [weak self] in
+            self?.updateTextEditorStyle()
+        }
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: options.fittingSize),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .captureOverlay
+        panel.hidesOnDeactivate = false
+        panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.contentView = options
+        annotationOptionsPanel = panel
+        toolbarPanel.addChildWindow(panel, ordered: .above)
+        refreshAnnotationOptionsPosition()
+        panel.orderFront(nil)
+    }
+
+    /// 下方放不下时翻到工具栏上方，并将整个快捷栏限制在当前屏幕可见范围内。
+    private func refreshAnnotationOptionsPosition() {
+        guard let panel = annotationOptionsPanel, let toolbar = toolbarPanel else { return }
+        let visible = (toolbar.screen ?? NSScreen.main)?.visibleFrame ?? bounds
+        let x = min(max(toolbar.frame.minX, visible.minX + 8), visible.maxX - panel.frame.width - 8)
+        var y = toolbar.frame.minY - panel.frame.height - 6
+        if y < visible.minY + 8 { y = toolbar.frame.maxY + 6 }
+        y = min(max(y, visible.minY + 8), visible.maxY - panel.frame.height - 8)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func hideAnnotationOptions() {
+        guard let panel = annotationOptionsPanel else { return }
+        annotationOptionsPanel = nil
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
     }
 
     /// 选区平移/拉伸时更新工具栏位置
@@ -1473,10 +1536,12 @@ class CaptureView: NSView {
             selectionRect: rect, toolbarSize: panel.frame.size, screenBounds: bounds)
         if panel.frame.origin != newOrigin {
             panel.setFrameOrigin(newOrigin)
+            refreshAnnotationOptionsPosition()
         }
     }
 
     private func hideToolbar() {
+        hideAnnotationOptions()
         guard let panel = toolbarPanel else { return }
 
         // 立即清空引用，防止重复调用

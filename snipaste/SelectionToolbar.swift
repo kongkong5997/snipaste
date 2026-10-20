@@ -327,6 +327,153 @@ final class SelectionToolbarView: NSView {
     }
 }
 
+// MARK: - 标注快捷样式栏
+
+/// 紧凑的粗细 / 字号与颜色按钮，仅修改当前设置，已提交的标注保留各自样式。
+final class AnnotationOptionsView: NSView {
+
+    private let settings = AppSettings.shared
+    private let tool: AnnotationTool
+    private let onChange: () -> Void
+    private var sizeButtons: [NSButton] = []
+    private var colorButtons: [NSButton] = []
+    private let sizeLabel = NSTextField(labelWithString: "")
+    private let colors: [(name: String, color: NSColor)] = [
+        ("红色", .systemRed), ("橙色", .systemOrange), ("黄色", .systemYellow),
+        ("绿色", .systemGreen), ("蓝色", .systemBlue), ("紫色", .systemPurple),
+        ("白色", .white), ("黑色", .black),
+    ]
+
+    init(tool: AnnotationTool, onChange: @escaping () -> Void) {
+        self.tool = tool
+        self.onChange = onChange
+        super.init(frame: .zero)
+
+        appearance = NSAppearance(named: .darkAqua)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.88).cgColor
+        layer?.cornerRadius = 10
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 4
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        // 序号只使用颜色；文字提供独立字号，其余绘图工具提供描边粗细。
+        if tool != .numbering {
+            let sizes = tool == .text ? [15, 24, 36] : [1, 3, 6]
+            for (index, size) in sizes.enumerated() {
+                let button = makeButton(action: #selector(sizeClicked(_:)), tag: size,
+                                        label: "\(tool == .text ? "字号" : "线宽") \(size) pt")
+                if tool == .text {
+                    button.title = "\(size)"
+                    button.font = .systemFont(ofSize: 11, weight: .medium)
+                } else {
+                    let diameter = CGFloat(4 + index * 3)
+                    button.imagePosition = .imageOnly
+                    button.image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
+                        NSColor.white.setFill()
+                        NSBezierPath(ovalIn: NSRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2,
+                                                   width: diameter, height: diameter)).fill()
+                        return true
+                    }
+                }
+                stack.addArrangedSubview(button)
+                sizeButtons.append(button)
+            }
+            sizeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            sizeLabel.textColor = .secondaryLabelColor
+            stack.addArrangedSubview(sizeLabel)
+            stack.addArrangedSubview(ToolbarDivider())
+        }
+
+        for (index, entry) in colors.enumerated() {
+            let button = makeButton(action: #selector(colorClicked(_:)), tag: index, label: entry.name)
+            button.imagePosition = .imageOnly
+            let color = entry.color
+            button.image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
+                let path = NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 3), xRadius: 2, yRadius: 2)
+                color.setFill()
+                path.fill()
+                NSColor.white.withAlphaComponent(0.35).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+                return true
+            }
+            stack.addArrangedSubview(button)
+            colorButtons.append(button)
+        }
+
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        updateSelection()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("不支持从 XIB 初始化")
+    }
+
+    private func makeButton(action: Selector, tag: Int, label: String) -> NSButton {
+        let button = NSButton(title: "", target: self, action: action)
+        button.tag = tag
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        button.setButtonType(.pushOnPushOff)
+        button.isBordered = false
+        button.refusesFirstResponder = true
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 5
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        return button
+    }
+
+    private func updateSelection() {
+        let size = tool == .text ? settings.annotationFontSize : settings.annotationLineWidth
+        sizeLabel.stringValue = "\(Int(size)) pt"
+        for button in sizeButtons {
+            mark(button, selected: abs(Double(button.tag) - size) < 0.01)
+        }
+        let color = settings.annotationColor.usingColorSpace(.sRGB)
+        for button in colorButtons {
+            mark(button, selected: color == colors[button.tag].color.usingColorSpace(.sRGB))
+        }
+    }
+
+    private func mark(_ button: NSButton, selected: Bool) {
+        button.state = selected ? .on : .off
+        button.layer?.borderWidth = selected ? 2 : 0
+        button.layer?.borderColor = ToolbarStyle.accent.cgColor
+        button.layer?.backgroundColor = selected ? ToolbarStyle.accent.withAlphaComponent(0.20).cgColor : nil
+    }
+
+    @objc private func sizeClicked(_ sender: NSButton) {
+        if tool == .text {
+            settings.annotationFontSize = Double(sender.tag)
+        } else {
+            settings.annotationLineWidth = Double(sender.tag)
+        }
+        updateSelection()
+        onChange()
+    }
+
+    @objc private func colorClicked(_ sender: NSButton) {
+        settings.annotationColor = colors[sender.tag].color
+        updateSelection()
+        onChange()
+    }
+}
+
 // MARK: - 工具栏定位计算器
 
 struct ToolbarPositionCalculator {

@@ -153,18 +153,21 @@ final class PinnedImageWindow: NSWindow {
 
         super.init(
             contentRect: contentRect,
-            styleMask: [.borderless],
+            styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
         )
 
         title = Self.screenCaptureTitle
 
+        // 使用系统边缘 / 四角拉伸，保持当前显示比例，并与滚轮缩放共用尺寸边界。
+        updateResizeConstraints(for: contentRect.size)
+
         // 悬浮于普通窗口之上、所有桌面空间可见
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        // 按住任意位置即可拖动贴图
+        // 图片内部拖动移动窗口，边缘和四角由系统处理拉伸。
         isMovableByWindowBackground = true
         isOpaque = false
         backgroundColor = .clear
@@ -200,7 +203,16 @@ final class PinnedImageWindow: NSWindow {
         let current = frame
         let size = NSSize(width: sourcePointSize.width, height: sourcePointSize.height)
         let origin = NSPoint(x: current.midX - size.width / 2, y: current.midY - size.height / 2)
+        updateResizeConstraints(for: size)
         setFrame(clamped(NSRect(origin: origin, size: size)), display: true)
+    }
+
+    /// 还原原始尺寸后同步约束，避免长图的预览比例与实际比例不同时，拉伸跳回旧比例。
+    private func updateResizeConstraints(for size: NSSize) {
+        contentAspectRatio = size
+        let heightPerWidth = size.height / size.width
+        contentMinSize = NSSize(width: Self.minZoomWidth, height: Self.minZoomWidth * heightPerWidth)
+        contentMaxSize = NSSize(width: Self.maxZoomWidth, height: Self.maxZoomWidth * heightPerWidth)
     }
 
     /// 钳制到所在屏幕的可见范围
@@ -221,7 +233,7 @@ final class PinImageView: NSImageView {
         // 图像按视图尺寸等比显示：截图贴图的窗口尺寸与图像逻辑尺寸一致，即 1:1；
         // 剪贴板里的超大图片会被缩到屏幕范围内
         imageScaling = .scaleProportionallyUpOrDown
-        toolTip = "滚轮向上放大、向下缩小；拖动移动；右键查看更多操作"
+        toolTip = "拖动边缘或四角调整大小；拖动图片内部移动；滚轮向上放大、向下缩小"
         wantsLayer = true
     }
 
