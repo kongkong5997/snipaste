@@ -1,0 +1,18 @@
+Generator: built-in image_gen
+
+Generation prompt:
+Use case: logo-brand.
+Asset type: a production-ready macOS application icon for a native screenshot and pinned-image utility named Snipaste.
+Primary request: design one beautiful, polished, distinctive app icon with excellent small-size legibility. Deliver a single finished icon, not a presentation, contact sheet, device mockup or variations.
+Composition: square 1024x1024 canvas. Center one macOS-style continuous-corner rounded square occupying about 82% of the canvas width and height, with generous transparent exterior margin. Straight-on, perfectly centered, no perspective tilt.
+Design: a rich azure-to-deep-cobalt blue rounded-square tile with restrained, premium enamel depth and a soft edge highlight. The central graphic is a bold, clean white screenshot selection symbol made of four substantial separated rounded L-shaped corner brackets, forming one clear square frame. A small, subtly overlapping cyan screenshot tile integrated at the lower right of the capture symbol suggests pinning a captured image. Keep the composition quiet, geometric, beautifully balanced and readable at 16, 32 and 64 pixels. White is the dominant glyph color, cyan is a small accent. Strong silhouette and generous negative space.
+Rendering: clean near-vector surfaces, precise curves and consistent thick strokes; subtle dimensional shading and a restrained soft drop shadow; sophisticated contemporary macOS utility aesthetic.
+Constraints: transparent background outside the rounded icon tile, real alpha. No text, initials, letters, numbers, branding, watermark, scissors, camera lens, photo mountains, dashed lines, tiny decorations, starbursts, busy details, exaggerated gloss, thick external outline, or any background scene. The tile itself is opaque blue. This is the actual icon artwork ready for an asset catalog.
+
+Cleanup prompt:
+Use case: precise-object-edit. Asset type: production macOS app icon.
+Image 1 is the EDIT TARGET: the newly designed blue rounded-square screenshot utility icon.
+Make exactly one cleanup change: repair the outer silhouette and alpha channel so the rounded-square blue tile has a flawlessly clean, smooth antialiased edge and the space outside it is entirely transparent. Remove every stray blue/cyan speck, pixel, halo, scratch and detached fragment outside the tile, including near the top, left, right and bottom edges. A faint restrained contiguous drop shadow immediately adjacent to the tile is allowed, but no scattered pixels anywhere.
+Preserve the interior artwork exactly: same blue gradient, same geometry, same white capture brackets, same small cyan tile at lower right, same scale and centered placement, same restrained depth. Do not redesign, add details, change colors, sharpen into jagged edges, or add text.
+Output one square high-resolution clean RGBA PNG app-icon asset with transparent exterior and roughly 9% padding around the tile. No labels, no mockups, no extra icons.
+

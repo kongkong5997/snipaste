@@ -168,7 +168,7 @@ class CaptureView: NSView {
 
         switch initialMode {
         case .region:
-            break
+            NSCursor.crosshair.set()
         case .fullScreen:
             confirmSelection(bounds)
         case .window:
@@ -494,8 +494,8 @@ class CaptureView: NSView {
 
         updateSnapHover(at: point)
 
-        // 未生成选区且命中候选元素时用手型提示"点击即选中"
-        if selectionRect == nil, hoveredSnappedRect != nil {
+        // 仅窗口点选模式使用手型；自由框选即使命中吸附窗口，也保持十字光标。
+        if initialMode == .window, selectionRect == nil, hoveredSnappedRect != nil {
             NSCursor.pointingHand.set()
         } else {
             updateCursor(at: point)
@@ -579,7 +579,9 @@ class CaptureView: NSView {
             } else {
                 Self.moveCursor.set()
             }
-        case .outside: NSCursor.arrow.set()  // 选区外显示普通箭头
+        case .outside:
+            // 尚未确认选区时提示可框选；已有选区时，选区外仍使用普通箭头。
+            (selectionRect == nil ? NSCursor.crosshair : NSCursor.arrow).set()
         }
     }
 
@@ -1586,6 +1588,7 @@ class CaptureView: NSView {
 
         hideToolbar()
         needsDisplay = true
+        NSCursor.crosshair.set()   // 清除选区后立即恢复框选光标，无需等待鼠标移动。
         print("🗑️ 选区已清除")
     }
 
